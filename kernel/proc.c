@@ -450,6 +450,7 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+	//printk("scheduler: running pid %d (%s)\n", p->pid, p->name);
         swtch(&c->context, &p->context);
 
         // Don't re-enable interrupts on release.
