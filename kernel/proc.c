@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "pstat.h"
 
 struct cpu cpus[NCPU];
 
@@ -394,6 +395,73 @@ kwait(uint64 addr)
             release(&pp->lock);
             release(&wait_lock);
             return -1;
+          }
+          pp->parent = 0;
+          freeproc(pp);
+          release(&pp->lock);
+          release(&wait_lock);
+          return pid;
+        }
+        release(&pp->lock);
+      }
+    }
+
+    // No point waiting if we don't have any children.
+    if (!havekids || killed(p)) {
+      release(&wait_lock);
+      return -1;
+    }
+
+    // Wait for a child to exit.
+    sleep_prepare(p); //DOC: wait-sleep
+    release(&wait_lock);
+    sleep();
+    acquire(&wait_lock);
+  }
+}
+
+// Like kwait(), but also copies the child's resource usage
+// (currently just cputime) to user address raddr, if non-zero.
+// Returns the child's pid, or -1 on error.
+int
+kwait2(uint64 addr, uint64 raddr)
+{
+  struct proc *pp;
+  int havekids, pid;
+  struct proc *p = myproc();
+
+  acquire(&wait_lock);
+
+  for (;;) {
+    // Scan through table looking for exited children.
+    havekids = 0;
+    for (pp = proc; pp < &proc[NPROC]; pp++) {
+      if (pp->parent == p) {
+        // make sure the child isn't still in exit() or swtch().
+        acquire(&pp->lock);
+
+        havekids = 1;
+        if (pp->state == ZOMBIE) {
+          // Found one.
+          pid = pp->pid;
+          if (addr != 0 &&
+              copyout(p->pagetable, p->sz, addr, (char *)&pp->xstate,
+                      sizeof(pp->xstate)) < 0) {
+            release(&pp->lock);
+            release(&wait_lock);
+            return -1;
+          }
+          // New for wait2: copy the child's rusage to the parent.
+          // Must happen before freeproc(), which clears the child.
+          if (raddr != 0) {
+            struct rusage ru;
+            ru.cputime = pp->cputime;
+            if (copyout(p->pagetable, p->sz, raddr, (char *)&ru,
+                        sizeof(ru)) < 0) {
+              release(&pp->lock);
+              release(&wait_lock);
+              return -1;
+            }
           }
           pp->parent = 0;
           freeproc(pp);
